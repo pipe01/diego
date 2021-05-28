@@ -3,6 +3,7 @@ package diego
 import (
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 )
 
@@ -14,40 +15,52 @@ type serviceRegistration struct {
 	instance interface{}
 }
 
+// Container holds a map of services
 type Container struct {
 	services map[reflect.Type]*serviceRegistration
 }
 
+// NewContainer creates a new empty container
 func NewContainer() *Container {
 	return &Container{
 		services: map[reflect.Type]*serviceRegistration{},
 	}
 }
 
-func (c *Container) Register(i interface{}, lifetime Lifetime) {
-	t := reflect.TypeOf(i)
+// Register registers a service implementation in the container with a lifetime.
+//
+// If v is a function, it must have either one or two outputs.
+// The first one will be the service implementation that will be registered,
+// and the second one, if present, must be an error type.
+//
+// If v is not a function, it will be directly registered as a singleton instance.
+func (c *Container) Register(v interface{}, lifetime Lifetime) {
+	t := reflect.TypeOf(v)
 
 	if t.Kind() != reflect.Func {
-		c.registerInstance(i, lifetime)
+		if lifetime != Singleton {
+			panic("lifetime must be singleton when registering an instance")
+		}
+		c.registerInstance(v, lifetime)
 		return
 	}
 
 	if t.NumOut() != 1 && t.NumOut() != 2 {
-		panic("Factory method must have either 1 or 2 outputs")
+		panic("factory method must have either 1 or 2 outputs")
 	}
 
 	if t.NumOut() == 2 && !t.Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
-		panic("Factory method's second output must be an error")
+		panic("factory method's second output must be an error")
 	}
 
 	svcType := t.Out(0)
 
 	if _, ok := c.services[svcType]; ok {
-		panic(fmt.Sprintf("Type %s already registered", svcType.Name()))
+		panic(fmt.Sprintf("type %s is already registered", svcType.Name()))
 	}
 
 	c.services[svcType] = &serviceRegistration{
-		factory:  reflect.ValueOf(i),
+		factory:  reflect.ValueOf(v),
 		lifetime: lifetime,
 	}
 }
@@ -65,6 +78,26 @@ func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
 	}
 }
 
+// Close calls Close() on all singleton instances that implement it
+func (c *Container) Close() {
+	for _, r := range c.services {
+		if r.instance != nil {
+			closer, ok := r.instance.(io.Closer)
+			if ok {
+				closer.Close()
+			}
+		}
+	}
+}
+
+// GetInstance takes a pointer to any of the following types:
+//
+// - Func: it must have no inputs and one output, a func will be returned that will return the service when called.
+//
+// - Interface: if no type is registered that directly matches this type, the first registered type that implements
+// this interface will be returned.
+//
+// - Any other value: the type will be looked up as-is.
 func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 	if tp == nil {
 		panic("nil value passed to GetInstance. Make sure you pass a pointer, not an interface value")
@@ -89,6 +122,7 @@ func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 	return val.Interface(), nil
 }
 
+// MustGetInstance is like GetInstance, but panics if an error is returned
 func (c *Container) MustGetInstance(tp interface{}) interface{} {
 	v, err := c.GetInstance(tp)
 	if err != nil {
