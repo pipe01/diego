@@ -7,6 +7,19 @@ import (
 	"reflect"
 )
 
+const (
+	panicInstanceLifetimeSingleton = "lifetime must be singleton when registering an instance"
+	panicFactoryMethodOutputs      = "factory method must have either 1 or 2 outputs"
+	panicFactorySecondOutputError  = "factory method's second output must be an error"
+
+	panicFnIsFunc         = "fn must be a func"
+	panicFnSingleInput    = "fn must have a single input"
+	panicFnInputInterface = "fn's input must be an interface type"
+
+	panicGetInstanceNil = "nil value passed to GetInstance. Make sure you pass a pointer, not an interface value"
+	panicParamIsPointer = "type parameter must be a pointer"
+)
+
 var emptyValue = reflect.Value{}
 
 type serviceRegistration struct {
@@ -39,18 +52,18 @@ func (c *Container) Register(v interface{}, lifetime Lifetime) {
 
 	if t.Kind() != reflect.Func {
 		if lifetime != Singleton {
-			panic("lifetime must be singleton when registering an instance")
+			panic(panicInstanceLifetimeSingleton)
 		}
 		c.registerInstance(v, lifetime)
 		return
 	}
 
 	if t.NumOut() != 1 && t.NumOut() != 2 {
-		panic("factory method must have either 1 or 2 outputs")
+		panic(panicFactoryMethodOutputs)
 	}
 
 	if t.NumOut() == 2 && !t.Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
-		panic("factory method's second output must be an error")
+		panic(panicFactorySecondOutputError)
 	}
 
 	svcType := t.Out(0)
@@ -69,7 +82,7 @@ func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
 	svcType := reflect.TypeOf(inst)
 
 	if _, ok := c.services[svcType]; ok {
-		panic(fmt.Sprintf("Type %s already registered", svcType.Name()))
+		panic(fmt.Sprintf("type %s already registered", svcType.Name()))
 	}
 
 	c.services[svcType] = &serviceRegistration{
@@ -78,7 +91,7 @@ func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
 	}
 }
 
-// Close calls Close() on all singleton instances that implement it
+// Close calls Close() on all singleton instances that implement it.
 func (c *Container) Close() {
 	for _, r := range c.services {
 		if r.instance != nil {
@@ -96,16 +109,13 @@ func (c *Container) All(fn interface{}) {
 	fnType := fnValue.Type()
 
 	if fnValue.Kind() != reflect.Func {
-		panic("fn must be a func")
+		panic(panicFnIsFunc)
 	}
 	if fnType.NumIn() != 1 {
-		panic("fn must have a single input")
+		panic(panicFnSingleInput)
 	}
 	if fnType.In(0).Kind() != reflect.Interface {
-		panic("fn's input must be an interface type")
-	}
-	if fnType.NumOut() != 0 {
-		panic("fn must have no outputs")
+		panic(panicFnInputInterface)
 	}
 
 	in := fnType.In(0)
@@ -132,14 +142,14 @@ func (c *Container) All(fn interface{}) {
 // - Any other value: the type will be looked up as-is.
 func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 	if tp == nil {
-		panic("nil value passed to GetInstance. Make sure you pass a pointer, not an interface value")
+		panic(panicGetInstanceNil)
 	}
 
 	pointer := reflect.TypeOf(tp)
 	pointerVal := reflect.ValueOf(tp)
 
 	if pointer.Kind() != reflect.Ptr {
-		panic("Type parameter must be a pointer")
+		panic(panicParamIsPointer)
 	}
 
 	val, err := c.getInstance(pointer.Elem())
@@ -154,13 +164,22 @@ func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 	return val.Interface(), nil
 }
 
+// MustGetInstance is like GetInstance, but panics if an error is returned.
+func (c *Container) MustGetInstance(tp interface{}) interface{} {
+	v, err := c.GetInstance(tp)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 // Call takes a function with any inputs and calls it, filling the inputs with values from the container.
 func (c *Container) Call(fn interface{}) {
 	val := reflect.ValueOf(fn)
 	typ := val.Type()
 
 	if val.Kind() != reflect.Func {
-		panic("fn must be a function")
+		panic(panicFnIsFunc)
 	}
 
 	args := make([]reflect.Value, typ.NumIn())
@@ -175,15 +194,6 @@ func (c *Container) Call(fn interface{}) {
 	}
 
 	val.Call(args)
-}
-
-// MustGetInstance is like GetInstance, but panics if an error is returned
-func (c *Container) MustGetInstance(tp interface{}) interface{} {
-	v, err := c.GetInstance(tp)
-	if err != nil {
-		panic(err)
-	}
-	return v
 }
 
 func (c *Container) getInstance(svcType reflect.Type) (svc reflect.Value, err reflect.Value) {
