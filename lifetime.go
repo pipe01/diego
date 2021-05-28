@@ -11,5 +11,5 @@ const (
 	Singleton
 
 	// Scoped services are instantiated once per scope.
-	Scoped
+	//Scoped
 )

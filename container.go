@@ -1,6 +1,7 @@
 package diego
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 )
@@ -65,10 +66,26 @@ func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
 }
 
 func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
-	val, err := c.getInstance(tp)
+	if tp == nil {
+		panic("nil value passed to GetInstance. Make sure you pass a pointer, not an interface value")
+	}
+
+	pointer := reflect.TypeOf(tp)
+	pointerVal := reflect.ValueOf(tp)
+
+	if pointer.Kind() != reflect.Ptr {
+		panic("Type parameter must be a pointer")
+	}
+
+	val, err := c.getInstance(pointer.Elem())
 	if err != emptyValue && !err.IsNil() {
 		return nil, err.Interface().(error)
 	}
+
+	if pointerVal.Elem() != reflect.ValueOf(nil) {
+		pointerVal.Elem().Set(val)
+	}
+
 	return val.Interface(), nil
 }
 
@@ -80,29 +97,38 @@ func (c *Container) MustGetInstance(tp interface{}) interface{} {
 	return v
 }
 
-func (c *Container) getInstance(tp interface{}) (reflect.Value, reflect.Value) {
-	pointer := reflect.TypeOf(tp)
-	pointerVal := reflect.ValueOf(tp)
-
-	if pointer.Kind() != reflect.Ptr {
-		panic("Type parameter must be a pointer")
-	}
-
-	svcType := pointer.Elem()
-
-	var svc, err reflect.Value
-
+func (c *Container) getInstance(svcType reflect.Type) (svc reflect.Value, err reflect.Value) {
 	// If the type is directly registered, call its factory
 	if reg, ok := c.services[svcType]; ok {
-		svc, err = c.callFactory(reg)
+		svc, err = c.instantiate(reg)
 	} else if svcType.Kind() == reflect.Interface {
 		// Otherwise, search for a type that implements the interface
 
 		for t, reg := range c.services {
 			if t.Implements(svcType) {
-				svc, err = c.callFactory(reg)
+				svc, err = c.instantiate(reg)
 			}
 		}
+	} else if svcType.Kind() == reflect.Func {
+		if svcType.NumIn() != 0 {
+			return emptyValue, reflect.ValueOf(errors.New("lazy function parameter must have no inputs"))
+		}
+		if svcType.NumOut() != 1 {
+			return emptyValue, reflect.ValueOf(errors.New("lazy function parameter must have a single output"))
+		}
+
+		svcType = svcType.Out(0)
+
+		funcType := reflect.FuncOf([]reflect.Type{}, []reflect.Type{svcType}, false)
+		fnc := reflect.MakeFunc(funcType, func([]reflect.Value) (results []reflect.Value) {
+			svc, err := c.getInstance(svcType)
+			if err != emptyValue && !err.IsNil() {
+				panic(err)
+			}
+			return []reflect.Value{svc}
+		})
+
+		return fnc, emptyValue
 	}
 
 	if err != emptyValue && !err.IsNil() {
@@ -110,17 +136,13 @@ func (c *Container) getInstance(tp interface{}) (reflect.Value, reflect.Value) {
 	}
 
 	if svc != emptyValue {
-		if pointerVal.Elem() != reflect.ValueOf(nil) {
-			pointerVal.Elem().Set(svc)
-		}
-
 		return svc, emptyValue
 	}
 
 	return emptyValue, reflect.ValueOf(&ErrorNotRegistered{svcType.Name()})
 }
 
-func (c *Container) callFactory(reg *serviceRegistration) (reflect.Value, reflect.Value) {
+func (c *Container) instantiate(reg *serviceRegistration) (reflect.Value, reflect.Value) {
 	if reg.instance != nil {
 		return reflect.ValueOf(reg.instance), emptyValue
 	}
@@ -131,7 +153,7 @@ func (c *Container) callFactory(reg *serviceRegistration) (reflect.Value, reflec
 	for i := 0; i < len(args); i++ {
 		argType := factoryType.In(i)
 
-		val, err := c.getInstance(reflect.New(argType).Interface())
+		val, err := c.getInstance(argType)
 		if err != emptyValue {
 			return emptyValue, err
 		}
