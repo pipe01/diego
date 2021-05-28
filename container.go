@@ -23,12 +23,13 @@ const (
 var emptyValue = reflect.Value{}
 
 type serviceRegistration struct {
-	factory  reflect.Value
-	lifetime Lifetime
-	instance interface{}
+	serviceType reflect.Type
+	factory     reflect.Value
+	lifetime    Lifetime
+	instance    interface{}
 }
 
-// Container holds a map of services
+// Container holds a collection of services
 type Container struct {
 	services map[reflect.Type]*serviceRegistration
 }
@@ -73,8 +74,9 @@ func (c *Container) Register(v interface{}, lifetime Lifetime) {
 	}
 
 	c.services[svcType] = &serviceRegistration{
-		factory:  reflect.ValueOf(v),
-		lifetime: lifetime,
+		serviceType: svcType,
+		factory:     reflect.ValueOf(v),
+		lifetime:    lifetime,
 	}
 }
 
@@ -86,8 +88,9 @@ func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
 	}
 
 	c.services[svcType] = &serviceRegistration{
-		instance: inst,
-		lifetime: lifetime,
+		serviceType: svcType,
+		instance:    inst,
+		lifetime:    lifetime,
 	}
 }
 
@@ -103,7 +106,7 @@ func (c *Container) Close() {
 	}
 }
 
-// All takes a function with a single input of an interface type and calls it for each service that implements that interface.
+// All takes a function with a single input of an interface type and calls it for every service that implements that interface.
 func (c *Container) All(fn interface{}) {
 	fnValue := reflect.ValueOf(fn)
 	fnType := fnValue.Type()
@@ -122,7 +125,7 @@ func (c *Container) All(fn interface{}) {
 
 	for t, reg := range c.services {
 		if t.Implements(in) {
-			svc, err := c.instantiate(reg)
+			svc, err := c.instantiate(nil, reg)
 			if err != emptyValue && !err.IsNil() {
 				panic(err.Interface())
 			}
@@ -152,9 +155,16 @@ func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 		panic(panicParamIsPointer)
 	}
 
-	val, err := c.getInstance(pointer.Elem())
+	val, err := c.getInstance(nil, pointer.Elem())
 	if err != emptyValue && !err.IsNil() {
-		return nil, err.Interface().(error)
+		errVal := err.Interface().(error)
+
+		var circularErr *ErrorCircularDependency
+		if errors.As(errVal, &circularErr) {
+			return nil, circularErr
+		}
+
+		return nil, errVal
 	}
 
 	if pointerVal.Elem() != reflect.ValueOf(nil) {
@@ -185,7 +195,7 @@ func (c *Container) Call(fn interface{}) {
 	args := make([]reflect.Value, typ.NumIn())
 	for i := 0; i < len(args); i++ {
 		argType := typ.In(i)
-		argVal, err := c.getInstance(argType)
+		argVal, err := c.getInstance(nil, argType)
 		if err != emptyValue && !err.IsNil() {
 			panic(err.Interface())
 		}
@@ -196,16 +206,16 @@ func (c *Container) Call(fn interface{}) {
 	val.Call(args)
 }
 
-func (c *Container) getInstance(svcType reflect.Type) (svc reflect.Value, err reflect.Value) {
+func (c *Container) getInstance(ctx *context, svcType reflect.Type) (svc reflect.Value, err reflect.Value) {
 	// If the type is directly registered, call its factory
 	if reg, ok := c.services[svcType]; ok {
-		svc, err = c.instantiate(reg)
+		svc, err = c.instantiate(ctx, reg)
 	} else if svcType.Kind() == reflect.Interface {
 		// Otherwise, search for a type that implements the interface
 
 		for t, reg := range c.services {
 			if t.Implements(svcType) {
-				svc, err = c.instantiate(reg)
+				svc, err = c.instantiate(nil, reg)
 			}
 		}
 	} else if svcType.Kind() == reflect.Func {
@@ -220,7 +230,7 @@ func (c *Container) getInstance(svcType reflect.Type) (svc reflect.Value, err re
 
 		funcType := reflect.FuncOf([]reflect.Type{}, []reflect.Type{svcType}, false)
 		fnc := reflect.MakeFunc(funcType, func([]reflect.Value) (results []reflect.Value) {
-			svc, err := c.getInstance(svcType)
+			svc, err := c.getInstance(ctx, svcType)
 			if err != emptyValue && !err.IsNil() {
 				panic(err.Interface())
 			}
@@ -241,7 +251,16 @@ func (c *Container) getInstance(svcType reflect.Type) (svc reflect.Value, err re
 	return emptyValue, reflect.ValueOf(&ErrorNotRegistered{svcType.Name()})
 }
 
-func (c *Container) instantiate(reg *serviceRegistration) (reflect.Value, reflect.Value) {
+func (c *Container) instantiate(ctx *context, reg *serviceRegistration) (reflect.Value, reflect.Value) {
+	if ctx == nil {
+		ctx = newContext()
+	}
+
+	if !ctx.push(reg.serviceType) {
+		return emptyValue, reflect.ValueOf(&ErrorCircularDependency{ctx.typeNames()})
+	}
+	defer ctx.pop()
+
 	if reg.instance != nil {
 		return reflect.ValueOf(reg.instance), emptyValue
 	}
@@ -252,7 +271,7 @@ func (c *Container) instantiate(reg *serviceRegistration) (reflect.Value, reflec
 	for i := 0; i < len(args); i++ {
 		argType := factoryType.In(i)
 
-		val, err := c.getInstance(argType)
+		val, err := c.getInstance(ctx, argType)
 		if err != emptyValue {
 			return emptyValue, err
 		}

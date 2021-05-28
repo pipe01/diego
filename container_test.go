@@ -99,3 +99,31 @@ func TestInterfaceRegisterAndGet(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, inst, ret)
 }
+
+type structA struct{}
+type structB struct{}
+type structC struct{}
+
+func TestCircularDependency(t *testing.T) {
+	c := NewContainer()
+
+	c.Register(func(structC) structA { return structA{} }, Singleton)
+	c.Register(func(structA) structB { return structB{} }, Singleton)
+	c.Register(func(structB) structC { return structC{} }, Singleton)
+
+	_, err := c.GetInstance((*structC)(nil))
+
+	assert.NotNil(t, err)
+}
+
+func TestCircularDependencyFunc(t *testing.T) {
+	c := NewContainer()
+
+	c.Register(func(structC) structA { return structA{} }, Singleton)
+	c.Register(func(structA) structB { return structB{} }, Singleton)
+	c.Register(func(func() structB) structC { return structC{} }, Singleton)
+
+	_, err := c.GetInstance((*structC)(nil))
+
+	assert.Nil(t, err)
+}
