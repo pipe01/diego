@@ -154,6 +154,29 @@ func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 	return val.Interface(), nil
 }
 
+// Call takes a function with any inputs and calls it, filling the inputs with values from the container.
+func (c *Container) Call(fn interface{}) {
+	val := reflect.ValueOf(fn)
+	typ := val.Type()
+
+	if val.Kind() != reflect.Func {
+		panic("fn must be a function")
+	}
+
+	args := make([]reflect.Value, typ.NumIn())
+	for i := 0; i < len(args); i++ {
+		argType := typ.In(i)
+		argVal, err := c.getInstance(argType)
+		if err != emptyValue && !err.IsNil() {
+			panic(err.Interface())
+		}
+
+		args[i] = argVal
+	}
+
+	val.Call(args)
+}
+
 // MustGetInstance is like GetInstance, but panics if an error is returned
 func (c *Container) MustGetInstance(tp interface{}) interface{} {
 	v, err := c.GetInstance(tp)
@@ -189,7 +212,7 @@ func (c *Container) getInstance(svcType reflect.Type) (svc reflect.Value, err re
 		fnc := reflect.MakeFunc(funcType, func([]reflect.Value) (results []reflect.Value) {
 			svc, err := c.getInstance(svcType)
 			if err != emptyValue && !err.IsNil() {
-				panic(err)
+				panic(err.Interface())
 			}
 			return []reflect.Value{svc}
 		})
