@@ -1,16 +1,11 @@
 package diego
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 )
 
 var emptyValue = reflect.Value{}
-
-var (
-	ErrServiceNotRegistered = errors.New("service not registered")
-)
 
 type serviceRegistration struct {
 	factory  reflect.Value
@@ -28,18 +23,19 @@ func NewContainer() *Container {
 	}
 }
 
-func (c *Container) Register(factory interface{}, lifetime Lifetime) {
-	t := reflect.TypeOf(factory)
+func (c *Container) Register(i interface{}, lifetime Lifetime) {
+	t := reflect.TypeOf(i)
 
 	if t.Kind() != reflect.Func {
-		panic("Invalid factory passed")
+		c.registerInstance(i, lifetime)
+		return
 	}
 
 	if t.NumOut() != 1 && t.NumOut() != 2 {
 		panic("Factory method must have either 1 or 2 outputs")
 	}
 
-	if t.NumOut() == 2 && !t.Out(1).Implements(reflect.TypeOf(ErrServiceNotRegistered)) {
+	if t.NumOut() == 2 && !t.Out(1).Implements(reflect.TypeOf((*error)(nil)).Elem()) {
 		panic("Factory method's second output must be an error")
 	}
 
@@ -50,17 +46,38 @@ func (c *Container) Register(factory interface{}, lifetime Lifetime) {
 	}
 
 	c.services[svcType] = &serviceRegistration{
-		factory:  reflect.ValueOf(factory),
+		factory:  reflect.ValueOf(i),
+		lifetime: lifetime,
+	}
+}
+
+func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
+	svcType := reflect.TypeOf(inst)
+
+	if _, ok := c.services[svcType]; ok {
+		panic(fmt.Sprintf("Type %s already registered", svcType.Name()))
+	}
+
+	c.services[svcType] = &serviceRegistration{
+		instance: inst,
 		lifetime: lifetime,
 	}
 }
 
 func (c *Container) GetInstance(tp interface{}) (interface{}, error) {
 	val, err := c.getInstance(tp)
-	if err != emptyValue {
+	if err != emptyValue && !err.IsNil() {
 		return nil, err.Interface().(error)
 	}
 	return val.Interface(), nil
+}
+
+func (c *Container) MustGetInstance(tp interface{}) interface{} {
+	v, err := c.GetInstance(tp)
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 func (c *Container) getInstance(tp interface{}) (reflect.Value, reflect.Value) {
@@ -88,8 +105,8 @@ func (c *Container) getInstance(tp interface{}) (reflect.Value, reflect.Value) {
 		}
 	}
 
-	if err != emptyValue {
-		return emptyValue, err
+	if err != emptyValue && !err.IsNil() {
+		return emptyValue, reflect.ValueOf(fmt.Errorf("create implementation for %s: %w", svcType.Name(), err.Interface()))
 	}
 
 	if svc != emptyValue {
@@ -100,10 +117,14 @@ func (c *Container) getInstance(tp interface{}) (reflect.Value, reflect.Value) {
 		return svc, emptyValue
 	}
 
-	return emptyValue, reflect.ValueOf(ErrServiceNotRegistered)
+	return emptyValue, reflect.ValueOf(&ErrorNotRegistered{svcType.Name()})
 }
 
 func (c *Container) callFactory(reg *serviceRegistration) (reflect.Value, reflect.Value) {
+	if reg.instance != nil {
+		return reflect.ValueOf(reg.instance), emptyValue
+	}
+
 	factoryType := reg.factory.Type()
 
 	args := make([]reflect.Value, factoryType.NumIn())
@@ -123,6 +144,10 @@ func (c *Container) callFactory(reg *serviceRegistration) (reflect.Value, reflec
 	var err reflect.Value
 	if len(out) > 1 {
 		err = out[1]
+	}
+
+	if reg.lifetime == Singleton && (err == emptyValue || err.IsNil()) {
+		reg.instance = out[0].Interface()
 	}
 
 	return out[0], err
