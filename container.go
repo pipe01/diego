@@ -90,6 +90,38 @@ func (c *Container) Close() {
 	}
 }
 
+// All takes a function with a single input of an interface type and calls it for each service that implements that interface.
+func (c *Container) All(fn interface{}) {
+	fnValue := reflect.ValueOf(fn)
+	fnType := fnValue.Type()
+
+	if fnValue.Kind() != reflect.Func {
+		panic("fn must be a func")
+	}
+	if fnType.NumIn() != 1 {
+		panic("fn must have a single input")
+	}
+	if fnType.In(0).Kind() != reflect.Interface {
+		panic("fn's input must be an interface type")
+	}
+	if fnType.NumOut() != 0 {
+		panic("fn must have no outputs")
+	}
+
+	in := fnType.In(0)
+
+	for t, reg := range c.services {
+		if t.Implements(in) {
+			svc, err := c.instantiate(reg)
+			if err != emptyValue && !err.IsNil() {
+				panic(err.Interface())
+			}
+
+			fnValue.Call([]reflect.Value{svc})
+		}
+	}
+}
+
 // GetInstance takes a pointer to any of the following types:
 //
 // - Func: it must have no inputs and one output, a func will be returned that will return the service when called.
