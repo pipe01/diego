@@ -31,14 +31,18 @@ type serviceRegistration struct {
 
 // Container holds a collection of services
 type Container struct {
-	services map[reflect.Type]*serviceRegistration
+	services map[reflect.Type][]*serviceRegistration
 }
 
 // NewContainer creates a new empty container
 func NewContainer() *Container {
 	return &Container{
-		services: map[reflect.Type]*serviceRegistration{},
+		services: map[reflect.Type][]*serviceRegistration{},
 	}
+}
+
+func (c *Container) addReg(t reflect.Type, r *serviceRegistration) {
+	c.services[t] = append(c.services[t], r)
 }
 
 // Register registers a service implementation in the container with a lifetime.
@@ -69,38 +73,32 @@ func (c *Container) Register(v interface{}, lifetime Lifetime) {
 
 	svcType := t.Out(0)
 
-	if _, ok := c.services[svcType]; ok {
-		panic(fmt.Sprintf("type %s is already registered", svcType.Name()))
-	}
-
-	c.services[svcType] = &serviceRegistration{
+	c.addReg(svcType, &serviceRegistration{
 		serviceType: svcType,
 		factory:     reflect.ValueOf(v),
 		lifetime:    lifetime,
-	}
+	})
 }
 
 func (c *Container) registerInstance(inst interface{}, lifetime Lifetime) {
 	svcType := reflect.TypeOf(inst)
 
-	if _, ok := c.services[svcType]; ok {
-		panic(fmt.Sprintf("type %s already registered", svcType.Name()))
-	}
-
-	c.services[svcType] = &serviceRegistration{
+	c.addReg(svcType, &serviceRegistration{
 		serviceType: svcType,
 		instance:    inst,
 		lifetime:    lifetime,
-	}
+	})
 }
 
 // Close calls Close() on all singleton instances that implement it.
 func (c *Container) Close() {
-	for _, r := range c.services {
-		if r.instance != nil {
-			closer, ok := r.instance.(io.Closer)
-			if ok {
-				closer.Close()
+	for _, regs := range c.services {
+		for _, r := range regs {
+			if r.instance != nil {
+				closer, ok := r.instance.(io.Closer)
+				if ok {
+					closer.Close()
+				}
 			}
 		}
 	}
@@ -123,14 +121,16 @@ func (c *Container) All(fn interface{}) {
 
 	in := fnType.In(0)
 
-	for t, reg := range c.services {
+	for t, regs := range c.services {
 		if t.Implements(in) {
-			svc, err := c.instantiate(nil, reg)
-			if err != emptyValue && !err.IsNil() {
-				panic(err.Interface())
-			}
+			for _, reg := range regs {
+				svc, err := c.instantiate(nil, reg)
+				if err != emptyValue && !err.IsNil() {
+					panic(err.Interface())
+				}
 
-			fnValue.Call([]reflect.Value{svc})
+				fnValue.Call([]reflect.Value{svc})
+			}
 		}
 	}
 }
@@ -209,13 +209,13 @@ func (c *Container) Call(fn interface{}) {
 func (c *Container) getInstance(ctx *context, svcType reflect.Type) (svc reflect.Value, err reflect.Value) {
 	// If the type is directly registered, call its factory
 	if reg, ok := c.services[svcType]; ok {
-		svc, err = c.instantiate(ctx, reg)
+		svc, err = c.instantiate(ctx, reg[0])
 	} else if svcType.Kind() == reflect.Interface {
 		// Otherwise, search for a type that implements the interface
 
 		for t, reg := range c.services {
 			if t.Implements(svcType) {
-				svc, err = c.instantiate(nil, reg)
+				svc, err = c.instantiate(nil, reg[0])
 			}
 		}
 	} else if svcType.Kind() == reflect.Func {

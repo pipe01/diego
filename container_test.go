@@ -33,14 +33,6 @@ func TestRegisterInvalid(t *testing.T) {
 			c.Register(func() (int, int) { return 0, 0 }, Transient)
 		})
 	})
-
-	t.Run("already registered", func(t *testing.T) {
-		c.Register(123, Singleton)
-
-		assert.Panics(t, func() {
-			c.Register(123, Singleton)
-		})
-	})
 }
 
 func TestGetInvalid(t *testing.T) {
@@ -98,6 +90,34 @@ func TestInterfaceRegisterAndGet(t *testing.T) {
 
 	assert.Nil(t, err)
 	assert.Equal(t, inst, ret)
+}
+
+func TestMultipleImplementations(t *testing.T) {
+	c := NewContainer()
+
+	c.Register(func() interface{} {
+		return 1
+	}, Singleton)
+	c.Register(func() interface{} {
+		return 2
+	}, Singleton)
+	c.Register(func() interface{} {
+		return 3
+	}, Singleton)
+
+	svc, err := c.GetInstance((*interface{})(nil))
+
+	assert.Nil(t, err)
+	assert.Equal(t, 1, svc)
+
+	gotten := make([]interface{}, 0)
+
+	c.All(func(i interface{}) {
+		gotten = append(gotten, i)
+	})
+
+	assert.Len(t, gotten, 3)
+	assert.ElementsMatch(t, gotten, []int{1, 2, 3})
 }
 
 type structA struct{}
